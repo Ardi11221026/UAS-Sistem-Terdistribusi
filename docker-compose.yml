@@ -1,0 +1,90 @@
+version: '3.9'
+
+services:
+  # PostgreSQL database untuk persistensi
+  storage:
+    image: postgres:16-alpine
+    container_name: uas-storage
+    environment:
+      POSTGRES_DB: distributed_logs
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "-c shared_preload_libraries=pg_stat_statements"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d distributed_logs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - distributed_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Aggregator service
+  aggregator:
+    build:
+      context: ./aggregator
+      dockerfile: Dockerfile
+    container_name: uas-aggregator
+    depends_on:
+      storage:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://user:password@storage:5432/distributed_logs
+      HOST: 0.0.0.0
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - aggregator_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - distributed_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Publisher service
+  publisher:
+    build:
+      context: ./publisher
+      dockerfile: Dockerfile
+    container_name: uas-publisher
+    depends_on:
+      aggregator:
+        condition: service_healthy
+    environment:
+      AGGREGATOR_URL: http://aggregator:8080
+      BATCH_SIZE: 50
+      TOTAL_EVENTS: 1000
+      DUPLICATE_RATE: "0.3"
+    networks:
+      - distributed_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pg_data:
+    driver: local
+  aggregator_data:
+    driver: local
+
+networks:
+  distributed_network:
+    driver: bridge
